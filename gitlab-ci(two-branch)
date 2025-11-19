@@ -1,0 +1,74 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  DEV_IMAGE: $CI_REGISTRY_DEV_IMAGE$CI_PROJECT_NAME:$CI_COMMIT_SHORT_SHA
+  STAGE_IMAGE: $CI_REGISTRY_STAGE_IMAGE$CI_PROJECT_NAME:$CI_COMMIT_SHORT_SHA
+  PROD_IMAGE: $CI_REGISTRY_PROD_IMAGE$CI_PROJECT_NAME:$CI_COMMIT_SHORT_SHA
+  RELEASE: $CI_REGISTRY_PROD_IMAGE$CI_PROJECT_NAME:latest
+
+
+build_production:
+  stage: build
+  tags:
+    - build-ftech
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD https://dstorage.multidev.uz/
+  script:
+    - docker build -f ./src/crm/Server/Dockerfile -t $PROD_IMAGE .
+    - docker push $PROD_IMAGE
+  only:
+  - mko_crm_prod
+
+build_develop:
+  stage: build
+  tags:
+    - build-ftech
+  before_script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD https://dstorage.multidev.uz/
+  script:
+    - docker build -f ./src/crm/Server/Dockerfile -t $DEV_IMAGE .
+    - docker push $DEV_IMAGE
+  only:
+  - mko_crm
+
+
+deploy_develop:
+  image: alpine:latest
+  stage: deploy
+  tags:
+    - deploy-ftech 
+  script:
+  - chmod 600 $ID_RSA
+  - apk update && apk add openssh-client openssl
+  - ssh -i "$ID_RSA" -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_IP" "docker pull $DEV_IMAGE"
+  - ssh -i "$ID_RSA" -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_IP" "docker rm -f mko-crm-dev || true"
+  - ssh -i "$ID_RSA" -o StrictHostKeyChecking=no "$SERVER_USER@$SERVER_IP" "docker run -d --restart=always --env-file /root/mko-crm-dev/config.env -v /root/mko-crm-dev/Logs:/app/Logs -p 172.16.150.120:6043:80 --name mko-crm-dev --label logging=promtail --label logging_jobname=containerlogs $DEV_IMAGE"
+
+
+  only:
+  - mko_crm
+
+
+deploy_production:
+  image: alpine:latest
+  stage: deploy
+  tags:
+    - deploy-ftech
+  script:
+    - chmod og= $ID_RSA
+    - apk update && apk add openssh-client openssl
+#    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN $CI_REGISTRY"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull $PROD_IMAGE"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker container rm -f mko-crm-prod || true"
+    - ssh -i $ID_RSA -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "
+      docker run -d --restart=always \
+      --env-file /root/mko-crm-prod/config.env \
+      -v /root/mko-crm-prod/Logs:/app/Logs \
+      -p 172.16.150.120:6051:80 \
+      --name mko-crm-prod \
+      $PROD_IMAGE"
+
+  only:
+    - mko_crm_prod
